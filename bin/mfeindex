@@ -74,57 +74,55 @@ def index_db(fasta_file, kvalue)
 end
 
 
-if $0 == __FILE__
-  usage = "Index database for MFEprimer-2.0
+usage = "Index database for MFEprimer-2.0
 
-  Usage:
+Usage:
 
-    #{File.basename($0)} fasta_file [kvalue]
+  #{File.basename($0)} fasta_file [kvalue]
 
-    
-    Options:
-    
-    kvalue: Default is 9 [Integer].
+  
+  Options:
+  
+  kvalue: Default is 9 [Integer].
 
-  Contact: Wubin Qu <quwubin@gmail.com>
-  "
+Contact: Wubin Qu <quwubin@gmail.com>
+"
 
-  case ARGV.size
-  when 2
-    fasta_file = ARGV[0]
-    kvalue = ARGV[1].to_i
-  when 1
-    fasta_file = ARGV[0]
-    kvalue = 9
-  else
-    $stderr.puts usage
-    exit
-  end
+case ARGV.size
+when 2
+  fasta_file = ARGV[0]
+  kvalue = ARGV[1].to_i
+when 1
+  fasta_file = ARGV[0]
+  kvalue = 9
+else
+  $stderr.puts usage
+  exit
+end
 
-  unless File.exists?(fasta_file)
-    $stdout.puts "Error: #{fasta_file} is not exitst.\n"
-    $stderr.puts usage
-    exit
-  end
+unless File.exists?(fasta_file)
+  $stdout.puts "Error: #{fasta_file} is not exitst.\n"
+  $stderr.puts usage
+  exit
+end
 
-  if File.size(fasta_file) > Qu::Mfeindex::BIG_DB_SPLIT_CUTOFF
-    $stdout.print "#{fasta_file} is too large, do you want to split it first? [Y/n]:"
+if File.size(fasta_file) > Qu::Mfeindex::BIG_DB_SPLIT_CUTOFF
+  $stdout.print "#{fasta_file} is too large, do you want to split it first? [Y/n]:"
+  choice = $stdin.gets.chomp.downcase
+  choice = 'y' if choice.empty?
+  while !['y', 'n'].include?(choice)
+    $stdout.print "The choice should be 'y' or 'n':"
     choice = $stdin.gets.chomp.downcase
-    choice = 'y' if choice.empty?
-    while !['y', 'n'].include?(choice)
-      $stdout.print "The choice should be 'y' or 'n':"
-      choice = $stdin.gets.chomp.downcase
-    end
-  else
-    choice = 'n'
   end
+else
+  choice = 'n'
+end
 
-  if choice == 'y'
-    small_file_list = split_db(fasta_file)
-    small_file_list.each do |small_file|
-      index_db(small_file, kvalue)
-    end
-  else
-    index_db(fasta_file, kvalue)
+if choice == 'y'
+  small_file_list = split_db(fasta_file)
+  small_file_list.each do |small_file|
+    index_db(small_file, kvalue)
   end
+else
+  index_db(fasta_file, kvalue)
 end
