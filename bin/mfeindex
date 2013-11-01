@@ -1,0 +1,130 @@
+#!/usr/bin/env ruby
+
+require 'qu/mfeindex'
+
+def split_db(big_db)
+  big_db_dir = Qu::Mfeindex::big_db_dir(big_db)
+  Dir.mkdir(big_db_dir) unless File.directory?(big_db_dir)
+
+  sum_size = 0
+  small_file_list = []
+  Dir.foreach(big_db_dir).each do |small_file|
+    prefix = File.basename(big_db)
+    next small_file unless small_file =~ /^#{prefix}\.\d$/
+    small_file_list << File.join(big_db_dir, small_file)
+    sum_size += File.size(File.join(big_db_dir, small_file))
+  end
+
+  if sum_size >= File.size(big_db)
+    $stdout.print "#{big_db} has been splited, do you want to resplit it? [y/N]:"
+    choice = $stdin.gets.chomp.downcase
+    choice = 'n' if choice.empty?
+    while !['y', 'n'].include?(choice)
+      $stdout.print "The choice should be 'y' or 'n':"
+      choice = $stdin.gets.chomp.downcase
+    end
+
+    if choice == 'n'
+      return small_file_list
+    end
+  end
+
+  small_file_list = []
+
+  small_file_index = 0
+  small_file_name = File.join(big_db_dir, File.basename(big_db) + '.' + small_file_index.to_s)
+  fh = File.open(small_file_name, 'w')
+  small_file_list << small_file_name
+  File.open(big_db).each do |line|
+    if line.start_with?('>')
+      if fh.size >= Qu::Mfeindex::BIG_DB_SPLIT_CUTOFF
+        fh.close
+        small_file_index += 1
+        small_file_name = File.join(big_db_dir, File.basename(big_db) + '.' + small_file_index.to_s)
+        fh = File.open(small_file_name, 'w')
+        small_file_list << small_file_name
+      end
+    end
+    fh.write(line)
+  end
+  fh.close
+
+  return small_file_list
+end
+
+
+def index_db(fasta_file, kvalue)
+  if Qu::Mfeindex::db_indexed?(fasta_file)
+    $stdout.print "#{fasta_file} has already been indexed, do you want to reindex? [y/N]:"
+    choice = $stdin.gets.chomp.downcase
+    choice = 'n' if choice.empty?
+    while !['y', 'n'].include?(choice)
+      $stdout.print "The choice should be 'y' or 'n':"
+      choice = $stdin.gets.chomp.downcase
+    end
+  else
+    choice = 'y'
+  end
+
+  if choice == 'y'
+    Qu::Mfeindex::MFEprimerIndex(fasta_file, kvalue, reindex=true)
+  else
+    Qu::Mfeindex::MFEprimerIndex(fasta_file, kvalue, reindex=false)
+  end
+end
+
+
+if $0 == __FILE__
+  usage = "Index database for MFEprimer-2.0
+
+  Usage:
+
+    #{File.basename($0)} fasta_file [kvalue]
+
+    
+    Options:
+    
+    kvalue: Default is 9 [Integer].
+
+  Contact: Wubin Qu <quwubin@gmail.com>
+  "
+
+  case ARGV.size
+  when 2
+    fasta_file = ARGV[0]
+    kvalue = ARGV[1].to_i
+  when 1
+    fasta_file = ARGV[0]
+    kvalue = 9
+  else
+    $stderr.puts usage
+    exit
+  end
+
+  unless File.exists?(fasta_file)
+    $stdout.puts "Error: #{fasta_file} is not exitst.\n"
+    $stderr.puts usage
+    exit
+  end
+
+  if File.size(fasta_file) > Qu::Mfeindex::BIG_DB_SPLIT_CUTOFF
+    $stdout.print "#{fasta_file} is too large, do you want to split it first? [Y/n]:"
+    choice = $stdin.gets.chomp.downcase
+    choice = 'y' if choice.empty?
+    while !['y', 'n'].include?(choice)
+      $stdout.print "The choice should be 'y' or 'n':"
+      choice = $stdin.gets.chomp.downcase
+    end
+  else
+    choice = 'n'
+  end
+
+  if choice == 'y'
+    small_file_list = split_db(fasta_file)
+    small_file_list.each do |small_file|
+      index_db(small_file, kvalue)
+    end
+  else
+    index_db(fasta_file, kvalue)
+  end
+end
