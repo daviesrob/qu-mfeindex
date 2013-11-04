@@ -3,7 +3,7 @@
 require 'qu/mfeindex'
 
 def split_db(big_db)
-  big_db_dir = Qu::Mfeindex::big_db_dir(big_db)
+  big_db_dir = Qu::Mfeindex::get_big_db_dir(big_db)
   Dir.mkdir(big_db_dir) unless File.directory?(big_db_dir)
 
   sum_size = 0
