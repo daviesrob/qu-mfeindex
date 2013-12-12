@@ -4,3 +4,4 @@ source 'https://rubygems.org'
 gemspec
 gem 'qu/utils'
 gem 'qu/cmdwrapper'
+gem 'qu/thermo'

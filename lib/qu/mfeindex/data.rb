@@ -11,6 +11,14 @@ module Qu
       'T' => 3, 
       'C' => 2, 
       'G' => 1,
+      '-' => 4,  # For bubble, added by Zheyan Liu
+      0 => 'A',
+      1 => 'G',
+      2 => 'C',
+      3 => 'T',
+      4 => '-',  # For bubble, added by Zheyan Liu 
     }
+        
+    ANTISENSE_CHARS = %w{A G C T -}
   end
 end

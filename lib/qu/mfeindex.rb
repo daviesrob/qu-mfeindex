@@ -83,12 +83,21 @@ module Qu
       $stderr.puts "Done index database: #{fasta_file}"
     end
 
-    def dna2int(dna)
+    def int2dna(int, k=9, base_number=4)
+      seqint = int.to_s(base_number)
+      dna = ""
+      (0...seqint.length).each do |index|
+       dna += D2I[seqint[index].to_i]    
+     end 
+     return 'A' * (k - seqint.length) + dna   
+    end
+
+    def dna2int(dna, base_number=4)
       plus_int = 0
       dna.upcase!
       # This is plus strand position
       dna.each_char.with_index do |base, index|
-        plus_int += D2I[base]*4**(dna.length - 1 - index)
+        plus_int += D2I[base] * base_number ** (dna.length - 1 - index)
       end
       return plus_int
     end
