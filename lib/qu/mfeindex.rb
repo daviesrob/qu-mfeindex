@@ -94,7 +94,7 @@ module Qu
 
     def dna2int(dna, base_number=4)
       plus_int = 0
-      dna.upcase!
+      dna = dna.upcase
       # This is plus strand position
       dna.each_char.with_index do |base, index|
         plus_int += D2I[base] * base_number ** (dna.length - 1 - index)
