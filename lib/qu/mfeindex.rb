@@ -1,5 +1,6 @@
 require 'qu/utils'
 require 'qu/cmdwrapper'
+
 require_relative "mfeindex/data"
 require_relative "mfeindex/version"
 require 'json'
