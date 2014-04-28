@@ -1,6 +1,6 @@
 # Qu::Mfeindex
 
-TODO: Write a gem description
+DNA sequence indexer originally developed for MFEprimer-2.0
 
 ## Installation
 
@@ -18,7 +18,7 @@ Or install it yourself as:
 
 ## Usage
 
-TODO: Write usage instructions here
+`mfeindex fasta_file [kvalue]`
 
 ## Contributing
 
