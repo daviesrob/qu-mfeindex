@@ -20,6 +20,7 @@ Gem::Specification.new do |spec|
 
   spec.add_runtime_dependency 'qu-utils', '~> 1.0'
   spec.add_runtime_dependency 'qu-cmdwrapper', '~> 1.0'
+  spec.add_runtime_dependency 'sqlite3'
 
   spec.add_development_dependency "bundler", "~> 1.3"
   spec.add_development_dependency "rake"
