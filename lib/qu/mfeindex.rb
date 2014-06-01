@@ -47,6 +47,18 @@ module Qu
       File.exist?(db + DB_SQLITE3) and File.exist?(db + DB_JSON) and File.exist?(db + DB_2BIT)
     end
 
+    def create_db_seq_desc(db)
+      info_json = {}
+
+      Bio::FlatFile.new(Bio::FastaFormat, File.open(db)).each do |record|
+        info_json[record.entry_name] = {'id' => record.entry_name, 'desc' => record.desc, 'size' => record.naseq.size}
+      end
+
+      File.open(db + DB_JSON, 'w') do |fh|
+        fh.write(JSON.dump(info_json))
+      end
+    end
+
     def MFEprimerIndex(fasta_file, k = 9, reindex = false)
       return if !reindex and db_indexed?(fasta_file)
 
