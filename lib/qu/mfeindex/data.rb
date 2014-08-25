@@ -3,6 +3,7 @@ module Qu
     DB_JSON = '.json'
     DB_SQLITE3 = '.sqlite3.db'
     DB_2BIT = '.2bit'
+    DB_FASTA = '.fa'
     BIG_DB = '_BIG_MFE_DB'
     BIG_DB_SPLIT_CUTOFF = 1024**3
 
