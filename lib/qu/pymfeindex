@@ -11,11 +11,92 @@ import sqlite3
 import platform
 import subprocess
 import re
-
+from struct import *
+from heapq import *
+from tempfile import TemporaryFile
 
 D2n_dic = dict(A=0, T=3, C=2, G=1, a=0, t=3, c=2, g=1)
 n2D_dic = {0:'A', 3:'T', 2:'C', 1:'G', 0:'a', 3:'t', 2:'c', 1:'g'}
 
+class Chunk:
+    def __init__(self, item_len, f, pos):
+        self.file = f
+        self.file_pos = pos
+        self.item_len = item_len
+        self.count = 0
+
+    def __iter__(self):
+        '''generator function to iterate through the stored data'''
+        if self.count == 0:
+            return
+
+        item_len = self.item_len
+        max_seg_len = 1000
+        for seg_start in range(0, self.count, max_seg_len):
+            self.file.seek(self.file_pos + seg_start * item_len, 0)
+            if seg_start + max_seg_len <= self.count:
+                seg_len = max_seg_len
+            else:
+                seg_len = self.count - seg_start
+            seg = self.file.read(seg_len * item_len)
+            
+            for i in range(seg_len):
+                yield seg[i * item_len:(i + 1) * item_len]
+        
+
+class MergeSorter:
+    '''class to handle spilling excess data to temporary files and
+    merging it when reading it back'''
+
+    '''limit individual file size to 2G'''
+    max_file_size = 2000000000
+    tmp_files = []
+    chunks = []
+
+    def __init__(self, l):
+        self.len = l
+
+    def new_tmp_file(self):
+        f = TemporaryFile()
+        self.tmp_files.append(f)
+        return f
+
+    def get_curr_file_num(self):
+        if len(self.tmp_files) > 0:
+            return self.tmp_files[-1]
+        else:
+            return self.new_tmp_file()
+
+    def store(self, data):
+        f = self.get_curr_file_num()
+        pos = f.tell()
+
+        chunk = Chunk(self.len, f, pos)
+
+        data.sort()
+
+        for item in data:
+            f.write(item)
+            chunk.count += 1
+            pos += self.len
+            if pos >= self.max_file_size:
+                self.chunks.append(chunk)
+                f = self.new_tmp_file()
+                pos = 0
+                chunk = Chunk(self.len, f, pos)
+
+        if pos > 0:
+            self.chunks.append(chunk)
+
+    def store_last(self, data):
+        data.sort()
+        self.chunks.append(data)
+
+    def __iter__(self):
+        '''Use the heapq merge function to get an iterator that merges
+        all the chunks together'''
+        return merge(*self.chunks)
+    
 def print_usage():
     print '''
 %s: Index DB for MFEprimer-2.0
@@ -34,6 +115,7 @@ def optget():
     parser.add_option("-f", "--file", dest = "filename", help = "DNA file in fasta to be indexed")
     parser.add_option("-k", "--k", dest = "k", type='int', help = "K mer , default is 9", default = 9)
     parser.add_option("-o", "--out", dest = "out", help = "Index db file name")
+    parser.add_option("-c", "--chunk", dest = "chunk", help = "Number of kmers to sort in memory", default=1000000)
 
     (options, args) = parser.parse_args()
 
@@ -43,6 +125,9 @@ def optget():
 
     if not options.out:
         options.out = options.filename + '.sqlite3.db'
+
+    if options.chunk < 10000:
+        options.chunk = 10000
 
     return options
 
@@ -88,36 +173,6 @@ def parse_fasta_format(fh):
         if not line: return
 
     assert False, 'Should not reach this line'
-
-def get_free_memory_percent():
-    if platform.system() == 'Darwin':
-        # Get process info
-        vm = subprocess.Popen(['vm_stat'], stdout=subprocess.PIPE).communicate()[0]
-        installed_memory = float(subprocess.Popen(['sysctl', '-n', 'hw.memsize'], stdout=subprocess.PIPE).communicate()[0])
-
-        # Process vm_stat
-        vmLines = vm.split('\n')
-        sep = re.compile(':[\s]+')
-        vmStats = {}
-        for row in range(1,len(vmLines)-2):
-            rowText = vmLines[row].strip()
-            rowElements = sep.split(rowText)
-            vmStats[(rowElements[0])] = int(rowElements[1].strip('\.')) * 4096
-
-        total_comsumed = vmStats["Pages wired down"] + vmStats["Pages active"] + vmStats["Pages inactive"]
-
-        return (installed_memory - total_comsumed) / installed_memory * 100
-
-    elif platform.system() == 'Linux':
-        items = subprocess.Popen(['free', '-m'], stdout=subprocess.PIPE).communicate()[0].splitlines()[1].strip().split()
-        free = float(items[3]) + float(items[5]) + float(items[6])
-        total = float(items[1])
-
-        return free / total * 100
-    else:
-        print "Sorry, currently only support Mac OS and Linux."
-        return 0
-
 
 def insert_db(conn, mer_count, plus, minus):
     for mer_id in xrange(mer_count):
@@ -179,7 +234,18 @@ def DNA2int(seq):
 
     return plus_mer
 
-def index(filename, k, dbname):
+def store_to_db(conn, mer_id, next_mer_id, collation, record_names):
+    if mer_id >= 0:
+        plus = ";".join('%s:%s' % (record_names[x[0]], ",".join(str(y) for y in x[1])) for x in collation['+'])
+        minus = ";".join('%s:%s' % (record_names[x[0]], ",".join(str(y) for y in x[1])) for x in collation['-'])
+        conn.execute("insert into pos (mer_id, plus, minus)"
+                     "values (?, ?, ?)", (mer_id, plus, minus))
+
+    conn.executemany("insert into pos (mer_id, plus, minus)"
+                     "values (?, ?, ?)",
+                     ((x, '', '') for x in range(mer_id + 1, next_mer_id)))
+
+def index(filename, k, dbname, max_count):
     ''''''
     start = time()
 
@@ -195,27 +261,34 @@ def index(filename, k, dbname):
     minus text
     );''')
 
-    plus = ['']*mer_count
-    minus = ['']*mer_count
 
-    is_empty = False
-    is_db_new = True
+    count = 0
+    record_num = 0
+    record_names = []
 
+    # Format for packing data.  By using big-endian byte ordering,
+    # we get the result that a simple sort will put everything in the order
+    # we want.
+    if k > 16:
+        fmt = '>QII'
+    else:
+        fmt = '>III'
+
+    fmt_len = calcsize(fmt)
+    sorter = MergeSorter(fmt_len)
+
+    # Accumulator for packed data items
+    items = []
+
+    # Get data and sort
     for record_id, record_desc, fasta_seq in parse_fasta_format(open(filename)):
         is_empty = False
         print record_id
-
-        #print 'Time used: ', time() - start
-
-        #plus_mer_list = [''] * mer_count
-        #minus_mer_list = [''] * mer_count
-        plus_mer_list = {}
-        minus_mer_list = {}
+        record_names.append(record_id)
+        record_num = len(record_names) - 1
 
         for i in xrange(len(fasta_seq)-k + 1):
-            #start = time()
             kmer = fasta_seq[i:(i+k)]
-            #print kmer, i
 
             try:
                 plus_mer_id, minus_mer_id = DNA2int_2(kmer)
@@ -223,53 +296,42 @@ def index(filename, k, dbname):
                 # Skip the unrecognized base, such as 'N'
                 continue
 
-            if plus_mer_list.has_key(plus_mer_id):
-                plus_mer_list[plus_mer_id] += ',%i' % (i+k-1)
-            else:
-                plus_mer_list[plus_mer_id] = str(i+k-1)
+            items.append(pack(fmt, plus_mer_id, record_num, i + k - 1))
+            items.append(pack(fmt, minus_mer_id, record_num | 0x80000000, i))
+            count += 2
 
-            if minus_mer_list.has_key(minus_mer_id):
-                minus_mer_list[minus_mer_id] += ',%i' % (i)
-            else:
-                minus_mer_list[minus_mer_id] = str(i)
+            if count >= max_count:
+                sorter.store(items)
+                items = []
+                count = 0
+                
+    # Don't forget the last bit
+    sorter.store_last(items)
 
-
-        #print 'Index time used: ', time() - start
-        #start = time()
-        for mer_id, pos in plus_mer_list.items():
-            if plus[mer_id]:
-                plus[mer_id] += ';%s:%s' % (record_id, pos)
-            else:
-                plus[mer_id] = '%s:%s' % (record_id, pos)
-
-        for mer_id, pos in minus_mer_list.items():
-            if minus[mer_id]:
-                minus[mer_id] += ';%s:%s' % (record_id, pos)
-            else:
-                minus[mer_id] = '%s:%s' % (record_id, pos)
-
-        #print 'Merge time used: ', time() - start
-
-        memory_percent = get_free_memory_percent()
-        if memory_percent < 30:
-            if is_db_new:
-                insert_db(conn, mer_count, plus, minus)
-                is_db_new = False
-            else:
-                update_db(conn, mer_count, plus, minus)
-
-            # Empty the container
-            plus = ['']*mer_count
-            minus = ['']*mer_count
-            is_empty = True
-
-            print 'Empty plus and minus due to the memory problem.'
-
-    if not is_empty:
-        if is_db_new:
-            insert_db(conn, mer_count, plus, minus)
+    # Merge it all together
+    last_kmer = -1
+    last_collation = { '+' : [], '-' : [] }
+    
+    for item in sorter:
+        mer_id, record_num, pos = unpack(fmt, item)
+        if record_num < 0x80000000:
+            dirn = '+'
         else:
-            update_db(conn, mer_count, plus, minus)
+            record_num &= 0x7fffffff
+            dirn = '-'
+        
+        if mer_id != last_kmer:
+            store_to_db(conn, last_kmer, mer_id, last_collation, record_names)
+            last_kmer = mer_id
+            last_collation = { '+' : [], '-' : [] }
+
+        if (len(last_collation[dirn]) == 0
+            or last_collation[dirn][-1][0] != record_num):
+            last_collation[dirn].append((record_num, []))
+        last_collation[dirn][-1][1].append(pos)
+
+    store_to_db(conn, last_kmer, mer_count, last_collation, record_names)
+    conn.commit()
 
     print "Time used: %s" % str(datetime.timedelta(seconds=(time() - start)))
     print 'Done.'
@@ -277,7 +339,8 @@ def index(filename, k, dbname):
 def main():
     '''main'''
     options = optget()
-    index(options.filename, options.k, options.out)
+    index(options.filename, options.k, options.out, options.chunk)
 
 if __name__ == "__main__":
     main()
+
