@@ -302,6 +302,43 @@ def DNA2int_2(seq):
 
     return plus_mer, minus_mer
 
+def seq_iter(seq, k):
+    '''Iterate through the sequence returning (pos, plus_mer, minus_mer)
+    tuples.'''
+    mask = (4 ** k) - 1
+    plus_mer  = -1
+    minus_mer = -1
+    pos = 0
+    while pos < len(seq) - k + 1:
+        if plus_mer < 0:
+            # Calculate over full kmer
+            try:
+                plus_mer, minus_mer = DNA2int_2(seq[pos:pos + k])
+                yield pos, plus_mer, minus_mer
+                pos += 1
+            except:
+                # Unrecognised base.  Find the offending character and
+                # skip past it
+                i = pos + k - 1
+                while i > pos and D2n_dic.has_key(seq[i]):
+                    i -= 1
+                pos = i + 1
+                plus_mer = -1
+        else:
+            # Update
+            c = seq[pos + k - 1]
+            if D2n_dic.has_key(c):
+                v = D2n_dic[c]
+                plus_mer = (plus_mer << 2) & mask | v
+                minus_mer = (minus_mer >> 2) | ((3 - v) << 2 * (k - 1))
+                yield pos, plus_mer, minus_mer
+                pos += 1
+            else:
+                # Last base unrecognised.  Skip entire kmer and restart
+                pos += k
+                plus_mer = -1
+                
+
 def DNA2int(seq):
     '''convert a sub-sequence/seq to a non-negative integer'''
     plus_mer = 0
@@ -367,14 +404,7 @@ def index(filename, k, dbname, memlimit):
         record_names.append(record_id)
         record_num = len(record_names) - 1
 
-        for i in xrange(len(fasta_seq)-k + 1):
-            kmer = fasta_seq[i:(i+k)]
-
-            try:
-                plus_mer_id, minus_mer_id = DNA2int_2(kmer)
-            except:
-                # Skip the unrecognized base, such as 'N'
-                continue
+        for i, plus_mer_id, minus_mer_id in seq_iter(fasta_seq, k):
 
             plus_bin = plus_mer_id >> kshift & 255
             minus_bin = minus_mer_id >> kshift & 255
