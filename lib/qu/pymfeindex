@@ -19,6 +19,10 @@ D2n_dic = dict(A=0, T=3, C=2, G=1, a=0, t=3, c=2, g=1)
 n2D_dic = {0:'A', 3:'T', 2:'C', 1:'G', 0:'a', 3:'t', 2:'c', 1:'g'}
 
 class Chunk:
+    '''Class to store information about a sorted segment of the data in
+    a temporary file.  It records which file the data is stored in, and
+    there the segment starts in that file.  It also provides an iterator
+    allowing the stored data to be read back again.'''
     def __init__(self, item_len, f, pos):
         self.file = f
         self.file_pos = pos
@@ -32,7 +36,7 @@ class Chunk:
 
         item_len = self.item_len
         max_seg_len = 1000
-        for seg_start in range(0, self.count, max_seg_len):
+        for seg_start in xrange(0, self.count, max_seg_len):
             self.file.seek(self.file_pos + seg_start * item_len, 0)
             if seg_start + max_seg_len <= self.count:
                 seg_len = max_seg_len
@@ -40,21 +44,45 @@ class Chunk:
                 seg_len = self.count - seg_start
             seg = self.file.read(seg_len * item_len)
             
-            for i in range(seg_len):
+            for i in xrange(seg_len):
                 yield seg[i * item_len:(i + 1) * item_len]
         
+class StrIter:
+    '''Class to iterate through items packed into a bytearray, or a
+    list of bytearrays.  Used to iterate through the last segment of the
+    data without having to write it to a temporary file.'''
+    def __init__(self, item_len, s):
+        if isinstance(s, list):
+            self.strs = s
+        else:
+            self.strs = [s]
+        self.item_len = item_len
+
+    def __iter__(self):
+        for s in self.strs:
+            for pos in xrange(0, len(s), self.item_len):
+                yield str(s[pos:pos + self.item_len])
 
 class MergeSorter:
     '''class to handle spilling excess data to temporary files and
     merging it when reading it back'''
 
-    '''limit individual file size to 2G'''
+    # limit individual file size to 2G
     max_file_size = 2000000000
     tmp_files = []
     chunks = []
 
-    def __init__(self, l):
+    def __init__(self, l, k):
         self.len = l
+        # Work out which bytes to radix sort on.  As the data gets stored
+        # in position order, we only actually need to sort on mer_id
+        # and direction (in the top bit of the record_id) as long
+        # as the sort is stable.  We also don't need to bother with
+        # the top 8 bits of mer_id as we bin on those bits already
+        # so they'll be identical for everything in the same bin.
+        self.sort_start_byte = l - calcsize('I') * 2 - int((k + 3 - 4) / 4)
+        self.sort_end_byte = l - calcsize('I') * 2 + 1
+        self.max_items = int(self.max_file_size / l)
 
     def new_tmp_file(self):
         f = TemporaryFile()
@@ -67,36 +95,85 @@ class MergeSorter:
         else:
             return self.new_tmp_file()
 
-    def store(self, data):
+    def radix_sort_byte(self, item, byte):
+        '''Stable radix sort on byte "byte" of entries in the bytearray "item"'''
+        # Count number of items in each bin
+        counts = [0 for x in xrange(256)]
+        for p in xrange(byte, len(item), self.len):
+            counts[item[p]] += 1
+
+        # Work out where the items for each bin will go in the output array
+        pos = [0]
+        used_bins = 0
+        for n, c in enumerate(counts):
+            pos.append(pos[n] + c * self.len)
+            used_bins += 1 if c > 0 else 0
+
+        # Short-cut if there is only 1 bin as the input is already sorted
+        if used_bins < 2:
+            return item
+
+        # Re-order into the new bytearray and return it.
+        out = bytearray(item)
+        for p in xrange(0, len(item), self.len):
+            b = item[p + byte]
+            out[pos[b]:pos[b] + self.len] = item[p:p + self.len]
+            pos[b] += self.len
+
+        return out
+
+    def store(self, items):
+        '''Sort and write items to a temporary file, and add to the list of
+        segments to merge.'''
         f = self.get_curr_file_num()
         pos = f.tell()
 
         chunk = Chunk(self.len, f, pos)
 
-        data.sort()
+        last_byte = self.len - 7
 
-        for item in data:
-            f.write(item)
-            chunk.count += 1
-            pos += self.len
-            if pos >= self.max_file_size:
-                self.chunks.append(chunk)
-                f = self.new_tmp_file()
-                pos = 0
-                chunk = Chunk(self.len, f, pos)
+        for b in xrange(256):
+            # LSD radix sort items[b]
+            for byte in reversed(xrange(self.sort_start_byte, self.sort_end_byte)):
+                items[b] = self.radix_sort_byte(items[b], byte)
 
-        if pos > 0:
+            # Write sorted data to the spill file
+            csz = 8192
+            num = int(len(items[b]) / self.len)
+            i = 0
+            while i < num:
+                sz = csz if pos + csz * self.len < self.max_file_size \
+                     else int((self.max_file_size - pos) / self.len) + 1
+                end = i + sz if i + sz < num else num
+                f.write(items[b][i * self.len:end * self.len])
+                chunk.count += end - i
+                pos += (end - i) * self.len
+                i = end
+                if pos >= self.max_file_size:
+                    # Start a new file
+                    self.chunks.append(chunk)
+                    f = self.new_tmp_file()
+                    pos = 0
+                    chunk = Chunk(self.len, f, pos)
+                
+        if chunk.count > 0:
             self.chunks.append(chunk)
 
-    def store_last(self, data):
-        data.sort()
-        self.chunks.append(data)
+    def store_last(self, items):
+        '''Sort last items and add them to the list of segments to merge.
+        In this case there is no need to save them.'''
+        for b in xrange(256):
+            # LSD radix sort items[b]
+            for byte in reversed(xrange(self.sort_start_byte, self.sort_end_byte)):
+                items[b] = self.radix_sort_byte(items[b], byte)
+        self.chunks.append(StrIter(self.len, items))
 
     def __iter__(self):
         '''Use the heapq merge function to get an iterator that merges
         all the chunks together'''
         return merge(*self.chunks)
-    
+
+
 def print_usage():
     print '''
 %s: Index DB for MFEprimer-2.0
@@ -115,7 +192,7 @@ def optget():
     parser.add_option("-f", "--file", dest = "filename", help = "DNA file in fasta to be indexed")
     parser.add_option("-k", "--k", dest = "k", type='int', help = "K mer , default is 9", default = 9)
     parser.add_option("-o", "--out", dest = "out", help = "Index db file name")
-    parser.add_option("-c", "--chunk", dest = "chunk", help = "Number of kmers to sort in memory", default=1000000)
+    parser.add_option("-m", "--memlimit", dest = "memlimit", help = "Memory limit for sorting (megabytes)", default=200)
 
     (options, args) = parser.parse_args()
 
@@ -126,8 +203,8 @@ def optget():
     if not options.out:
         options.out = options.filename + '.sqlite3.db'
 
-    if options.chunk < 10000:
-        options.chunk = 10000
+    if options.memlimit < 100:
+        options.memlimit = 100
 
     return options
 
@@ -245,7 +322,7 @@ def store_to_db(conn, mer_id, next_mer_id, collation, record_names):
                      "values (?, ?, ?)",
                      ((x, '', '') for x in range(mer_id + 1, next_mer_id)))
 
-def index(filename, k, dbname, max_count):
+def index(filename, k, dbname, memlimit):
     ''''''
     start = time()
 
@@ -275,10 +352,13 @@ def index(filename, k, dbname, max_count):
         fmt = '>III'
 
     fmt_len = calcsize(fmt)
-    sorter = MergeSorter(fmt_len)
+    max_count = memlimit * 2**20 // fmt_len
+    sorter = MergeSorter(fmt_len, k)
+
+    kshift = 2 * k - 8 if k > 4 else 0
 
     # Accumulator for packed data items
-    items = []
+    items = [bytearray("") for x in xrange(256)]
 
     # Get data and sort
     for record_id, record_desc, fasta_seq in parse_fasta_format(open(filename)):
@@ -296,22 +376,30 @@ def index(filename, k, dbname, max_count):
                 # Skip the unrecognized base, such as 'N'
                 continue
 
-            items.append(pack(fmt, plus_mer_id, record_num, i + k - 1))
-            items.append(pack(fmt, minus_mer_id, record_num | 0x80000000, i))
+            plus_bin = plus_mer_id >> kshift & 255
+            minus_bin = minus_mer_id >> kshift & 255
+            items[plus_bin].extend(pack(fmt, plus_mer_id, record_num, i + k - 1))
+            items[minus_bin].extend(pack(fmt, minus_mer_id, record_num | 0x80000000, i))
             count += 2
 
             if count >= max_count:
+                # print "@ %s : flushing out data" % str(datetime.timedelta(seconds=(time() - start)))
                 sorter.store(items)
-                items = []
+                # print "@ %s : flushed out data" % str(datetime.timedelta(seconds=(time() - start)))
+                # items = []
+                items = [bytearray("") for x in xrange(256)]
                 count = 0
                 
     # Don't forget the last bit
+    # print "@ %s : flushing out last data" % str(datetime.timedelta(seconds=(time() - start)))
     sorter.store_last(items)
+    # print "@ %s : flushed out last data" % str(datetime.timedelta(seconds=(time() - start)))
 
     # Merge it all together
     last_kmer = -1
     last_collation = { '+' : [], '-' : [] }
-    
+
+    # print "@ %s : starting merge phase" % str(datetime.timedelta(seconds=(time() - start)))
     for item in sorter:
         mer_id, record_num, pos = unpack(fmt, item)
         if record_num < 0x80000000:
@@ -339,7 +427,7 @@ def index(filename, k, dbname, max_count):
 def main():
     '''main'''
     options = optget()
-    index(options.filename, options.k, options.out, options.chunk)
+    index(options.filename, options.k, options.out, options.memlimit)
 
 if __name__ == "__main__":
     main()
