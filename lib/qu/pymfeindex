@@ -13,6 +13,7 @@ import subprocess
 import re
 from struct import *
 from heapq import *
+from zlib import *
 from tempfile import TemporaryFile
 
 D2n_dic = dict(A=0, T=3, C=2, G=1, a=0, t=3, c=2, g=1)
@@ -28,6 +29,7 @@ class Chunk:
         self.file_pos = pos
         self.item_len = item_len
         self.count = 0
+        self.compressed_len = 0
 
     def __iter__(self):
         '''generator function to iterate through the stored data'''
@@ -35,18 +37,26 @@ class Chunk:
             return
 
         item_len = self.item_len
-        max_seg_len = 1000
-        for seg_start in xrange(0, self.count, max_seg_len):
-            self.file.seek(self.file_pos + seg_start * item_len, 0)
-            if seg_start + max_seg_len <= self.count:
-                seg_len = max_seg_len
-            else:
-                seg_len = self.count - seg_start
-            seg = self.file.read(seg_len * item_len)
-            
-            for i in xrange(seg_len):
-                yield seg[i * item_len:(i + 1) * item_len]
-        
+        max_seg_len = 8192
+        decomp = decompressobj()
+        carry_over = ""
+        for seg_start in xrange(0, self.compressed_len, max_seg_len):
+            self.file.seek(self.file_pos + seg_start, 0)
+            seg_len = max_seg_len \
+                      if seg_start + max_seg_len < self.compressed_len \
+                      else self.compressed_len - seg_start
+            seg = self.file.read(seg_len)
+            data = carry_over + decomp.decompress(decomp.unconsumed_tail + seg)
+            i = 0
+            while i + item_len <= len(data):
+                yield data[i:i + item_len]
+                i += item_len
+            carry_over = data[i:]
+
+        data = carry_over + decomp.flush()
+        for i in xrange(0, len(data), item_len):
+            yield data[i:i + item_len]
+                
 class StrIter:
     '''Class to iterate through items packed into a bytearray, or a
     list of bytearrays.  Used to iterate through the last segment of the
@@ -129,8 +139,7 @@ class MergeSorter:
         pos = f.tell()
 
         chunk = Chunk(self.len, f, pos)
-
-        last_byte = self.len - 7
+        comp = compressobj(1)
 
         for b in xrange(256):
             # LSD radix sort items[b]
@@ -138,26 +147,38 @@ class MergeSorter:
                 items[b] = self.radix_sort_byte(items[b], byte)
 
             # Write sorted data to the spill file
-            csz = 8192
+            sz = 8192
             num = int(len(items[b]) / self.len)
             i = 0
             while i < num:
-                sz = csz if pos + csz * self.len < self.max_file_size \
-                     else int((self.max_file_size - pos) / self.len) + 1
                 end = i + sz if i + sz < num else num
-                f.write(items[b][i * self.len:end * self.len])
+
+                shrunk = comp.compress(str(items[b][i * self.len:end * self.len]))
+                f.write(shrunk)
                 chunk.count += end - i
-                pos += (end - i) * self.len
+                pos += len(shrunk)
+                chunk.compressed_len += len(shrunk)
                 i = end
                 if pos >= self.max_file_size:
+                    # Finish compressed stream
+                    remain = comp.flush()
+                    f.write(remain)
+                    chunk.compressed_len += len(remain)
+                    # print "Wrote tmp file count = %d compressed size = %d" % (chunk.count, chunk.compressed_len)
                     # Start a new file
                     self.chunks.append(chunk)
                     f = self.new_tmp_file()
+                    comp = compressobj(1)
                     pos = 0
                     chunk = Chunk(self.len, f, pos)
                 
         if chunk.count > 0:
+            # Finish compressed stream
+            remain = comp.flush()
+            f.write(remain)
+            chunk.compressed_len += len(remain)
             self.chunks.append(chunk)
+            # print "Wrote tmp file count = %d compressed size = %d" % (chunk.count, chunk.compressed_len)
 
     def store_last(self, items):
         '''Sort last items and add them to the list of segments to merge.
