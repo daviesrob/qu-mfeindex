@@ -213,7 +213,7 @@ def optget():
     parser.add_option("-f", "--file", dest = "filename", help = "DNA file in fasta to be indexed")
     parser.add_option("-k", "--k", dest = "k", type='int', help = "K mer , default is 9", default = 9)
     parser.add_option("-o", "--out", dest = "out", help = "Index db file name")
-    parser.add_option("-m", "--memlimit", dest = "memlimit", help = "Memory limit for sorting (megabytes)", default=200)
+    parser.add_option("-m", "--memlimit", dest = "memlimit", help = "Memory limit for sorting (megabytes)", type=int, default=200)
 
     (options, args) = parser.parse_args()
 
@@ -229,6 +229,22 @@ def optget():
 
     return options
 
+def fasta_sequence_iterator(fh):
+    line_start = True
+    while True:
+        ch = fh.read(1)
+        if not ch:
+            return
+        if line_start and ch == '>':
+            return
+        if ch == "\n":
+            line_start = True
+            continue
+        line_start = False
+        if not ch.isspace():
+            yield ch
+        
+
 def parse_fasta_format(fh):
     '''
     A Fasta-format Parser return Iterator
@@ -241,34 +257,17 @@ def parse_fasta_format(fh):
         line = line.strip()
 
         if line.startswith('>'):
+            line = line.lstrip('>')
             break
 
     while True:
-        if not line.startswith('>'):
-            raise ValueError("Records in Fasta files should start with '>' character")
-
-        id, sep, desc = line[1:].partition(' ')
-
-        seq_lines = []
-        line = fh.readline()
-        while True:
-            if not line: break
-
-            line = line.strip()
-
-            if line.startswith('>'):
-                break
-
-            if not line:
-                line = fh.readline()
-                continue
-
-            seq_lines.append(line.replace(' ', '').replace("\r", ''))
-            line = fh.readline()
-
-        yield (id, desc, ''.join(seq_lines))
-
         if not line: return
+        id, sep, desc = line.partition(' ')
+
+        yield(id, desc, fasta_sequence_iterator(fh))
+
+        line = fh.readline()
+        line = line.strip()
 
     assert False, 'Should not reach this line'
 
@@ -330,24 +329,33 @@ def seq_iter(seq, k):
     plus_mer  = -1
     minus_mer = -1
     pos = 0
-    while pos < len(seq) - k + 1:
+    kmer = ''
+    while True:
         if plus_mer < 0:
             # Calculate over full kmer
+            kmer = kmer + ''.join(seq.next() for i in xrange(k - len(kmer)))
+            if len(kmer) < k:
+                return
             try:
-                plus_mer, minus_mer = DNA2int_2(seq[pos:pos + k])
+                plus_mer, minus_mer = DNA2int_2(kmer)
                 yield pos, plus_mer, minus_mer
                 pos += 1
             except:
                 # Unrecognised base.  Find the offending character and
                 # skip past it
-                i = pos + k - 1
-                while i > pos and D2n_dic.has_key(seq[i]):
-                    i -= 1
-                pos = i + 1
+                i = k - 1
+                try:
+                    while i > 0 and D2n_dic.has_key(kmer[i]):
+                        i -= 1
+                except:
+                    print "%d %s %d" % (i, kmer, pos)
+                    raise IndexError("string index out of range")
+                kmer = kmer[i + 1:]
+                pos += i + 1
                 plus_mer = -1
         else:
             # Update
-            c = seq[pos + k - 1]
+            c = seq.next()
             if D2n_dic.has_key(c):
                 v = D2n_dic[c]
                 plus_mer = (plus_mer << 2) & mask | v
@@ -358,6 +366,7 @@ def seq_iter(seq, k):
                 # Last base unrecognised.  Skip entire kmer and restart
                 pos += k
                 plus_mer = -1
+                kmer = ''
                 
 
 def DNA2int(seq):
