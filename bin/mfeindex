@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require 'getoptlong'
 require 'qu/mfeindex'
 
 def split_db(big_db)
@@ -53,7 +54,7 @@ def split_db(big_db)
 end
 
 
-def index_db(fasta_file, kvalue)
+def index_db(fasta_file, kvalue, mem_limit)
   if Qu::Mfeindex::db_indexed?(fasta_file)
     $stdout.print "#{fasta_file} has already been indexed, do you want to reindex? [y/N]:"
     choice = $stdin.gets.chomp.downcase
@@ -67,9 +68,9 @@ def index_db(fasta_file, kvalue)
   end
 
   if choice == 'y'
-    Qu::Mfeindex::MFEprimerIndex(fasta_file, kvalue, reindex=true)
+    Qu::Mfeindex::MFEprimerIndex(fasta_file, kvalue, mem_limit, reindex=true)
   else
-    Qu::Mfeindex::MFEprimerIndex(fasta_file, kvalue, reindex=false)
+    Qu::Mfeindex::MFEprimerIndex(fasta_file, kvalue, mem_limit, reindex=false)
   end
 end
 
@@ -78,15 +79,25 @@ usage = "Index database for MFEprimer-2.0
 
 Usage:
 
-  #{File.basename($0)} fasta_file [kvalue]
+  #{File.basename($0)} [-m sort_mem_limit] fasta_file [kvalue]
 
   
   Options:
   
+  -m    : Memory limit for sorting step, Megabytes.  Default is 200 [Integer].
   kvalue: Default is 9 [Integer].
 
 Contact: Wubin Qu <quwubin@gmail.com>
 "
+
+opts = GetoptLong.new(
+  [ "--mem_limit", "-m", GetoptLong::REQUIRED_ARGUMENT ]
+)
+
+mem_limit = 200
+opts.each do |opt, arg|
+  mem_limit = arg.to_i if (opt == "--mem_limit")
+end
 
 case ARGV.size
 when 2
@@ -121,8 +132,8 @@ end
 if choice == 'y'
   small_file_list = split_db(fasta_file)
   small_file_list.each do |small_file|
-    index_db(small_file, kvalue)
+    index_db(small_file, kvalue, mem_limit)
   end
 else
-  index_db(fasta_file, kvalue)
+  index_db(fasta_file, kvalue, mem_limit)
 end

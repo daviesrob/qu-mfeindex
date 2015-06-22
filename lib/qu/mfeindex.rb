@@ -59,7 +59,7 @@ module Qu
       end
     end
 
-    def MFEprimerIndex(fasta_file, k = 9, reindex = false)
+    def MFEprimerIndex(fasta_file, k = 9, mem_limit = 200, reindex = false)
       return if !reindex and db_indexed?(fasta_file)
 
       unless File.exists?(fasta_file)
@@ -85,7 +85,7 @@ module Qu
 
       cmd = File.join(__dir__, 'pymfeindex')
       $stderr.puts "Begin index database: #{fasta_file}"
-      `#{cmd} -f #{uni_fasta} -k #{k} -o #{fasta_file + DB_SQLITE3}`
+      `#{cmd} -f #{uni_fasta} -m #{mem_limit} -k #{k} -o #{fasta_file + DB_SQLITE3}`
       begin
         File.delete(uni_fasta)
       rescue
