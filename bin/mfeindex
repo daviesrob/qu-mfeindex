@@ -90,13 +90,16 @@ Usage:
 Contact: Wubin Qu <quwubin@gmail.com>
 "
 
-opts = GetoptLong.new(
-  [ "--mem_limit", "-m", GetoptLong::REQUIRED_ARGUMENT ]
-)
+opts = GetoptLong.new(["--mem_limit", "-m", GetoptLong::REQUIRED_ARGUMENT],
+                      ["--split", GetoptLong::NO_ARGUMENT ],
+                      ["--nosplit", GetoptLong::NO_ARGUMENT ])
 
-mem_limit = 200
+mem_limit = 200     # Memory limit for pymfeindex
+choice = nil        # Should file be split?
 opts.each do |opt, arg|
   mem_limit = arg.to_i if (opt == "--mem_limit")
+  choice = 'y' if (opt == "--split")
+  choice = 'n' if (opt == "--nosplit")
 end
 
 case ARGV.size
@@ -117,16 +120,20 @@ unless File.exists?(fasta_file)
   exit
 end
 
-if File.size(fasta_file) > Qu::Mfeindex::BIG_DB_SPLIT_CUTOFF
-  $stdout.print "#{fasta_file} is too large, do you want to split it first? [Y/n]:"
-  choice = $stdin.gets.chomp.downcase
-  choice = 'y' if choice.empty?
-  while !['y', 'n'].include?(choice)
-    $stdout.print "The choice should be 'y' or 'n':"
+if choice.nil?
+  if File.size(fasta_file) > Qu::Mfeindex::BIG_DB_SPLIT_CUTOFF
+    $stdout.print "#{fasta_file} is too large, do you want to split it first? [Y/n]:"
     choice = $stdin.gets.chomp.downcase
+    choice = 'y' if choice.empty?
+    while !['y', 'n'].include?(choice)
+      $stdout.print "The choice should be 'y' or 'n':"
+      choice = $stdin.gets.chomp.downcase
+    end
+  else
+    choice = 'n'
   end
-else
-  choice = 'n'
+elsif File.size(fasta_file) <= Qu::Mfeindex::BIG_DB_SPLIT_CUTOFF
+  choice = 'n' # No need to split if file is small
 end
 
 if choice == 'y'
